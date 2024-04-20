@@ -4,6 +4,13 @@
 #include "nand.h"
 
 typedef enum {
+    CLEARED,
+    VISITED,
+    CALCULATED,
+    FAILED
+} gate_state;
+
+typedef enum {
     GATE,
     SIGNAL,
     NONE
@@ -12,22 +19,23 @@ typedef enum {
 typedef struct {
     ssize_t array_idx;
     nand_t *gate;
-} nand_bind_ptr;
+} nand_bind;
 
 typedef struct {
     input_type type;
     union {
-        bool *signal;
-        nand_bind_ptr bind;
+        bool const *signal;
+        nand_bind bind;
     };
 } input_t;
 
 struct nand {
     unsigned input_num;
     unsigned output_num;
-    bool state;
+    bool sig_out;
+    gate_state state;
     input_t *inputs;
-    nand_bind_ptr *outputs;
+    nand_bind *outputs;
 };
 
 
@@ -46,10 +54,10 @@ nand_t *nand_new(unsigned n) { // OK!
         return NULL;
     }
     // 1 output for now
-    new_gate->outputs = (nand_bind_ptr *)malloc(sizeof(nand_bind_ptr));
+    new_gate->outputs = (nand_bind *)malloc(sizeof(nand_bind));
     if (new_gate->outputs == NULL) {
-        free(new_gate);
         free(new_gate->inputs);
+        free(new_gate);
         errno = ENOMEM;
         return NULL;
     }
@@ -62,6 +70,8 @@ nand_t *nand_new(unsigned n) { // OK!
     new_gate->outputs[0].array_idx = -1;
     new_gate->outputs[0].gate = NULL;
 
+    // The state should always be CLEARED for every gate before evaluating
+    new_gate->state = CLEARED;
     new_gate->input_num = n;
     new_gate->output_num = 0;
     return new_gate;
@@ -69,21 +79,26 @@ nand_t *nand_new(unsigned n) { // OK!
 
 // Disconnects gate g output, where k is the output number
 void _nand_disconnect_output(nand_t *g, unsigned k) { // OK!
-    if (g == NULL) {
+    /* We suppose that we get correct input, otherwise something went wrong
+       elsewhere */
+    assert(g != NULL);
+    assert(k < g->output_num);
+            
+    // Gets the pointer to the bind we want to reset
+    nand_bind *output_bind = &(g->outputs[k]);
+    // Gets the gate we are the input of
+    nand_t *target_gate = output_bind->gate;
+    // It might be an empty output block, if that's the case we can return
+    if (target_gate == NULL) {
         return;
     }
-    assert(k < g->output_num); // should never happen
-
-    nand_bind_ptr output_bind = g->outputs[k];
-    if (output_bind.gate == NULL) {
-        return;
-    }
-    //TODO: size of the array of pointers output doesnt change but its only
-    // partially used; when connecting new output first check for NULL entries.
-    g->outputs[k].array_idx = -1;
-    g->outputs[k].gate = NULL;
-    ssize_t our_idx = output_bind.array_idx;
-    output_bind.gate->inputs[our_idx].type = NONE;
+    // This is the index we are at in the inputs array of the target gate
+    ssize_t our_idx = output_bind->array_idx;
+    // Resets the input that corresponds to us in the target gate
+    target_gate->inputs[our_idx].type = NONE;
+    // Resets our bind
+    output_bind->array_idx = -1;
+    output_bind->gate = NULL;
 }
 
 void _nand_disconnect_input(input_t input) { // OK!
@@ -97,10 +112,10 @@ void nand_delete(nand_t *g) { //OK!
         return;
     }
     
-    for (int i = 0; i < g->output_num; i++) {
+    for (unsigned i = 0; i < g->output_num; i++) {
         _nand_disconnect_output(g, i);
     }
-    for (int i = 0; i < g->input_num; i++) {
+    for (unsigned i = 0; i < g->input_num; i++) {
         _nand_disconnect_input(g->inputs[i]);
     }
     free(g->inputs);
@@ -115,9 +130,9 @@ int nand_connect_nand(nand_t *g_out, nand_t *g_in, unsigned k) { //OK!
     }
 
     // If there is a free place for a connection, find it
-    unsigned free_place = -1;
-    for (int i = 0; i < g_out->output_num; i++) {
-        if (g_out->outputs[i].array_idx == -1) {
+    ssize_t free_place = -1;
+    for (unsigned i = 0; i < g_out->output_num; i++) {
+        if (g_out->outputs[i].gate = NULL) {
             free_place = i;
             break;
         }
@@ -125,7 +140,7 @@ int nand_connect_nand(nand_t *g_out, nand_t *g_in, unsigned k) { //OK!
     // We haven't found a free connection
     if (free_place == -1) {
         unsigned old_size = g_out->output_num;
-        nand_bind_ptr *new_outputs = realloc(g_out->outputs, old_size * 2);
+        nand_bind *new_outputs = realloc(g_out->outputs, old_size * 2);
         if (new_outputs == NULL) {
             errno = ENOMEM;
             return -1;
@@ -133,7 +148,7 @@ int nand_connect_nand(nand_t *g_out, nand_t *g_in, unsigned k) { //OK!
         g_out->outputs = new_outputs;
         g_out->output_num *= 2;
         // Set all new outputs to default but not the first new
-        for (int i = old_size + 1; i < old_size * 2; i++) {
+        for (unsigned i = old_size + 1; i < old_size * 2; i++) {
             g_out->outputs[i].array_idx = -1;
             g_out->outputs[i].gate = NULL;
         }
@@ -158,7 +173,7 @@ int nand_connect_signal(bool const *s, nand_t *g, unsigned k) {
     _nand_disconnect_input(g->inputs[k]);
     g->inputs[k].type = SIGNAL;
     g->inputs[k].signal = s;
-    return 1;
+    return 0;
 }
 
 ssize_t nand_fan_out(nand_t const *g) {
@@ -166,9 +181,9 @@ ssize_t nand_fan_out(nand_t const *g) {
         errno = EINVAL;
         return -1;
     }
-    ssize_t free_count = 0;
-    for (int i = 0; i < g->output_num; i++) {
-        if (g->outputs[i].array_idx == -1) {
+    unsigned free_count = 0;
+    for (unsigned i = 0; i < g->output_num; i++) {
+        if (g->outputs[i].gate == NULL) {
             free_count++;
         }
     }
@@ -195,12 +210,40 @@ nand_t* nand_output(nand_t const *g, ssize_t k) {
         return NULL;
     }
     ssize_t counter = 0;
-    for (int i = 0; i < g->output_num; i++) {
-        if (g->outputs[i].array_idx != -1) {
-            if (++counter == k) {
+    for (unsigned i = 0; i < g->output_num; i++) {
+        if (g->outputs[i].gate != NULL) {
+            if (counter == k) {
                 return g->outputs[i].gate;
             }
+            counter++;
         }
     }
     return NULL;
 }
+
+ssize_t nand_evaluate(nand_t **g, bool *s, size_t m) {
+    if (m == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (int i = 0; i < m; i++) {
+        if (g[i] == NULL) {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+
+    bool failed = false;
+    for (int i = 0; i < m; i++) {
+        gate_state outcome = _nand_evaluate(g[i]);
+        if (outcome == CALCULATED) {
+            s[i] = g[i]->sig_out;
+        } else {
+            failed = true;
+            break;
+        }
+    }
+    
+}
+// Also, types are a little fucked up (ssize_t vs unsigned)
+// We cast from void* to const bool* is that ok? (we have to cast at least once)
