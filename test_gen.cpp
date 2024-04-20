@@ -26,8 +26,8 @@ int main(int argc, char **argv) {
         rng = mt19937(stoi(argv[1]));
     }
     
-    int n = randint(0, 6);
-    int q = randint(5, 10'000);
+    int n = randint(0, 10);
+    int q = randint(5, 30'000);
     cout << n << " " << q << "\n";
     
     set<int>active_gates;
