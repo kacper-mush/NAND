@@ -145,7 +145,6 @@ int nand_connect_nand(nand_t *g_out, nand_t *g_in, unsigned k) { //OK!
     // We haven't found a free connection
     if (free_place == -1) {
         size_t old_size = g_out->output_num;
-        printf("%d\n",old_size * 2);
         nand_bind *new_outputs = realloc(g_out->outputs, 2 * old_size * sizeof(nand_bind));
         if (new_outputs == NULL) {
             errno = ENOMEM;
