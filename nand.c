@@ -33,6 +33,7 @@ struct nand {
     unsigned input_num;
     unsigned output_num;
     bool sig_out;
+    ssize_t path_length;
     gate_state state;
     input_t *inputs;
     nand_bind *outputs;
@@ -72,13 +73,14 @@ nand_t *nand_new(unsigned n) { // OK!
 
     // The state should always be CLEARED for every gate before evaluating
     new_gate->state = CLEARED;
+    new_gate->path_length = -1;
     new_gate->input_num = n;
     new_gate->output_num = 0;
     return new_gate;
 }
 
 // Disconnects gate g output, where k is the output number
-void _nand_disconnect_output(nand_t *g, unsigned k) { // OK!
+static void _nand_disconnect_output(nand_t *g, unsigned k) { // OK!
     /* We suppose that we get correct input, otherwise something went wrong
        elsewhere */
     assert(g != NULL);
@@ -101,7 +103,7 @@ void _nand_disconnect_output(nand_t *g, unsigned k) { // OK!
     output_bind->gate = NULL;
 }
 
-void _nand_disconnect_input(input_t input) { // OK!
+static void _nand_disconnect_input(input_t input) { // OK!
     if (input.type == GATE) {
         _nand_disconnect_output(input.bind.gate, input.bind.array_idx);
     }
@@ -221,6 +223,68 @@ nand_t* nand_output(nand_t const *g, ssize_t k) {
     return NULL;
 }
 
+static ssize_t _nand_evaluate(nand_t *g) {
+    assert(g != NULL); // Something went terribly wrong
+    if (g->state == CALCULATED) {
+        return g->path_length;
+    }
+    if (g->state == FAILED) {
+        return -1;
+    }
+    if (g->state == VISITED) { // Just for consistency
+        g->state = FAILED;
+        return -1;
+    }
+    if (g->input_num == 0) {
+        g->state = CALCULATED;
+        g->sig_out = false;
+        return (g->path_length = 0);
+    }
+    // this gate is CLEARED so now we set it to VISITED and check all inputs
+    g->state = VISITED;
+    g->sig_out = true; // if any of the inputs is true then it will be false
+    g->path_length = 0;
+    for (int i = 0; i < g->input_num; i++) {
+        input_t input = g->inputs[i];
+        if (input.type == NONE) {
+            g->state = FAILED;
+            return -1;
+        }
+        if (input.type == GATE) {
+            nand_t *gate = input.bind.gate;
+            ssize_t outcome = _nand_evaluate(gate);
+            if (outcome == -1) {  // Evaluate on the input failed
+                g->state = FAILED;
+                return -1;
+            }
+            g->path_length = max(g->path_length, outcome);
+            if (gate->sig_out == true) {
+                g->sig_out = false;
+            }
+        } else { // We have a signal
+            if (*(input.signal) == true) {
+                g->sig_out = false;
+            }
+        } 
+    }
+    g->state = CALCULATED;
+    return ++(g->path_length);
+}
+
+static void _evaluate_cleanup(nand_t *g) {
+    assert(g != NULL);
+    if (g->state == CLEARED) {
+        return;
+    }
+    g->state = CLEARED;
+    for (int i = 0; i < g->input_num; i++) {
+        if (g->inputs[i].type == GATE) {
+            _evaluate_cleanup(g->inputs[i].bind.gate);
+        }
+    }
+    return;
+}
+
 ssize_t nand_evaluate(nand_t **g, bool *s, size_t m) {
     if (m == 0) {
         errno = EINVAL;
@@ -233,17 +297,25 @@ ssize_t nand_evaluate(nand_t **g, bool *s, size_t m) {
         }
     }
 
+    ssize_t path_length = 0;
     bool failed = false;
     for (int i = 0; i < m; i++) {
-        gate_state outcome = _nand_evaluate(g[i]);
-        if (outcome == CALCULATED) {
-            s[i] = g[i]->sig_out;
-        } else {
+        ssize_t new_length = _nand_evaluate(g[i]);
+        if (new_length == -1) {
             failed = true;
             break;
         }
+        s[i] = g[i]->sig_out;
+        path_length = max(path_length, new_length);
     }
-    
+    for (int i = 0; i < m; i++) {
+        _evaluate_cleanup(g[i]);
+    }
+    if (failed) {
+        errno = ECANCELED;
+        return -1;
+    }
+    return path_length;
 }
 // Also, types are a little fucked up (ssize_t vs unsigned)
 // We cast from void* to const bool* is that ok? (we have to cast at least once)
