@@ -56,19 +56,19 @@ static int example(void) {
   assert(g[0]);
   assert(g[1]);
   assert(g[2]);
-
+  
   TEST_PASS(nand_connect_nand(g[2], g[0], 0));
   TEST_PASS(nand_connect_nand(g[2], g[0], 1));
   TEST_PASS(nand_connect_nand(g[2], g[1], 0));
-
+   
   TEST_PASS(nand_connect_signal(s_in + 0, g[2], 0));
   TEST_PASS(nand_connect_signal(s_in + 1, g[2], 1));
   TEST_PASS(nand_connect_signal(s_in + 1, g[1], 1));
-
+  
   ASSERT(0 == nand_fan_out(g[0]));
   ASSERT(0 == nand_fan_out(g[1]));
   ASSERT(3 == nand_fan_out(g[2]));
-
+  
   int c[3] = {0};
   for (ssize_t i = 0; i < 3; ++i) {
     nand_t *t = nand_output(g[2], i);
@@ -77,11 +77,12 @@ static int example(void) {
         c[j]++;
   }
   ASSERT(c[0] == 2 && c[1] == 1 && c[2] == 0);
-
+   puts("HELLOOOO");
   s_in[0] = false, s_in[1] = false;
   path_len = nand_evaluate(g, s_out, 3);
+  printf("%d %d %d %d", path_len, s_out[0], s_out[1], s_out[2]);
   ASSERT(path_len == 2 && s_out[0] == false && s_out[1] == true && s_out[2] == true);
-
+   puts("HELLOOOO");
   s_in[0] = true, s_in[1] = false;
   path_len = nand_evaluate(g, s_out, 3);
   ASSERT(path_len == 2 && s_out[0] == false && s_out[1] == true && s_out[2] == true);
